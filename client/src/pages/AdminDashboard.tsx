@@ -1,22 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { api } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, toOrder } from '../api';
 import { supabase } from '../lib/supabase';
 import type { Category, MenuItem, Table, Order } from '../types';
 import { QRCodeCanvas } from 'qrcode.react';
 import { Settings, LayoutGrid, DollarSign, Plus, Coffee, LogOut } from 'lucide-react';
 import clsx from 'clsx';
-
-// Helper to convert Supabase row to Order type
-const toOrder = (row: any): Order => ({
-  id: row.id,
-  tableId: row.tableid ?? row.tableId,
-  items: Array.isArray(row.items) ? row.items : (row.items ? JSON.parse(row.items) : []),
-  totalPrice: row.totalprice ?? row.totalPrice,
-  status: row.status,
-  paymentStatus: row.paymentstatus ?? row.paymentStatus,
-  paymentMethod: row.paymentmethod ?? row.paymentMethod,
-  createdAt: row.createdat ?? row.createdAt
-});
 
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<'pos' | 'menu' | 'revenue'>('pos');
@@ -37,10 +25,16 @@ export default function AdminDashboard() {
   const [selectedYear, setSelectedYear] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [selectedDay, setSelectedDay] = useState('all');
-  const [isAuthed, setIsAuthed] = useState(false);
+  const [isAuthed, setIsAuthed] = useState(() => localStorage.getItem('admin_authed') === '1');
   const [loginEmail, setLoginEmail] = useState('admin@admin.com');
   const [loginPassword, setLoginPassword] = useState('adminadmin');
   const [loginError, setLoginError] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsSuccess, setSettingsSuccess] = useState('');
   const [newCategoryName, setNewCategoryName] = useState('');
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState('');
@@ -52,14 +46,41 @@ export default function AdminDashboard() {
   const [newItem, setNewItem] = useState({ name: '', price: 0, categoryId: 'cat_1', description: '', image: defaultImage });
   const [imagePreview, setImagePreview] = useState<string>(defaultImage);
 
-  useEffect(() => {
-    const authed = localStorage.getItem('admin_authed') === '1';
-    setIsAuthed(authed);
+  const refreshData = useCallback(async () => {
+    try {
+      const data = await api.getInitData();
+      setTables(data.tables);
+      setMenuItems(data.menuItems);
+      setCategories(data.categories);
+      if (data.categories.length > 0) {
+        setNewItem(prev => prev.categoryId ? prev : { ...prev, categoryId: data.categories[0].id });
+      }
+      const orderData = await api.getOrders();
+      setOrders(orderData);
+    } catch (err) {
+      console.error("Failed to refresh data:", err);
+    }
   }, []);
 
   useEffect(() => {
     if (!isAuthed) return;
-    refreshData();
+    // Initial load — kept inside an async IIFE so state updates happen after
+    // the awaited fetch rather than synchronously within the effect body.
+    (async () => {
+      try {
+        const data = await api.getInitData();
+        setTables(data.tables);
+        setMenuItems(data.menuItems);
+        setCategories(data.categories);
+        if (data.categories.length > 0) {
+          setNewItem(prev => prev.categoryId ? prev : { ...prev, categoryId: data.categories[0].id });
+        }
+        const orderData = await api.getOrders();
+        setOrders(orderData);
+      } catch (err) {
+        console.error("Failed to refresh data:", err);
+      }
+    })();
 
     // Subscribe to orders changes via Supabase Realtime
     const ordersChannel = supabase
@@ -105,21 +126,6 @@ export default function AdminDashboard() {
     };
   }, [isAuthed]);
 
-  const refreshData = async () => {
-    try {
-      const data = await api.getInitData();
-      setTables(data.tables);
-      setMenuItems(data.menuItems);
-      setCategories(data.categories);
-      if (data.categories.length > 0 && !newItem.categoryId) {
-        setNewItem(prev => ({ ...prev, categoryId: data.categories[0].id }));
-      }
-      const orderData = await api.getOrders();
-      setOrders(orderData);
-    } catch (err) {
-      console.error("Failed to refresh data:", err);
-    }
-  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,11 +138,42 @@ export default function AdminDashboard() {
         localStorage.setItem('admin_email', res.user.email || '');
         setIsAuthed(true);
       } else {
-        setLoginError('帳號或密碼錯誤');
+        setLoginError(res.error || '帳號或密碼錯誤');
       }
     } catch (err) {
       console.error("Login failed:", err);
-      setLoginError('登入失敗');
+      setLoginError('登入失敗，請稍後再試');
+    }
+  };
+
+  const openSettings = () => {
+    setCurrentPassword('');
+    setNewEmail(localStorage.getItem('admin_email') || '');
+    setNewPassword('');
+    setSettingsError('');
+    setSettingsSuccess('');
+    setSettingsOpen(true);
+  };
+
+  const handleUpdateCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSettingsError('');
+    setSettingsSuccess('');
+    const email = localStorage.getItem('admin_email') || '';
+    try {
+      const res = await api.updateCredentials(email, currentPassword, newEmail, newPassword);
+      if (res.success && res.user) {
+        localStorage.setItem('admin_user_id', res.user.id);
+        localStorage.setItem('admin_email', res.user.email || '');
+        setSettingsSuccess('已更新管理員帳號設定');
+        setCurrentPassword('');
+        setNewPassword('');
+      } else {
+        setSettingsError(res.error || '更新失敗');
+      }
+    } catch (err) {
+      console.error("Update credentials failed:", err);
+      setSettingsError('更新失敗，請稍後再試');
     }
   };
 
@@ -487,7 +524,13 @@ export default function AdminDashboard() {
             <DollarSign size={20} /> 營收統計
           </button>
         </nav>
-        <button 
+        <button
+          onClick={openSettings}
+          className="w-full text-left p-3 rounded flex items-center gap-2 hover:bg-slate-800 text-slate-400"
+        >
+          <Settings size={20} /> 帳號設定
+        </button>
+        <button
           onClick={handleLogout}
           className="w-full text-left p-3 rounded flex items-center gap-2 hover:bg-slate-800 text-slate-400"
         >
@@ -1073,6 +1116,65 @@ export default function AdminDashboard() {
             >
               取消
             </button>
+          </div>
+        </div>
+      )}
+      {/* Account Settings Modal */}
+      {settingsOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white p-6 rounded-xl max-w-md w-full">
+            <h2 className="text-2xl font-bold mb-1">帳號設定</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              變更管理員登入 Email 或密碼。需輸入目前密碼以確認身分。
+            </p>
+            <form onSubmit={handleUpdateCredentials} className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">目前密碼</label>
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={e => setCurrentPassword(e.target.value)}
+                  className="w-full border rounded p-2"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">新的 Email</label>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={e => setNewEmail(e.target.value)}
+                  className="w-full border rounded p-2"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">
+                  新密碼 <span className="font-normal text-gray-400">（留空則不變更）</span>
+                </label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  className="w-full border rounded p-2"
+                  placeholder="至少 4 個字元"
+                />
+              </div>
+              {settingsError && <div className="text-red-600 text-sm">{settingsError}</div>}
+              {settingsSuccess && <div className="text-green-600 text-sm">{settingsSuccess}</div>}
+              <div className="flex gap-3 pt-2">
+                <button type="submit" className="flex-1 bg-slate-900 text-white py-2 rounded hover:bg-slate-800 font-bold">
+                  儲存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="flex-1 border py-2 rounded hover:bg-gray-50 font-bold"
+                >
+                  關閉
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

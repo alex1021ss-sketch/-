@@ -2,52 +2,79 @@ import { supabase } from './lib/supabase';
 import type { MenuItem, Category, Order, Table, OrderItem } from './types';
 import { v4 as uuidv4 } from 'uuid';
 
+// Supabase returns loosely-typed rows whose columns may be snake_case (from the
+// database) or camelCase (from realtime payloads), so the mappers accept a
+// generic record and normalise it into our domain types.
+type Row = Record<string, unknown>;
+
 // Helper to convert Supabase row to Order type
-const toOrder = (row: any): Order => ({
-  id: row.id,
-  tableId: row.tableid ?? row.tableId,
-  items: Array.isArray(row.items) ? row.items : (row.items ? JSON.parse(row.items) : []),
-  totalPrice: row.totalprice ?? row.totalPrice,
-  status: row.status,
-  paymentStatus: row.paymentstatus ?? row.paymentStatus,
-  paymentMethod: row.paymentmethod ?? row.paymentMethod,
-  createdAt: row.createdat ?? row.createdAt
+export const toOrder = (row: Row): Order => ({
+  id: row.id as string,
+  tableId: (row.tableid ?? row.tableId) as number,
+  items: Array.isArray(row.items)
+    ? (row.items as OrderItem[])
+    : (row.items ? (JSON.parse(row.items as string) as OrderItem[]) : []),
+  totalPrice: (row.totalprice ?? row.totalPrice) as number,
+  status: row.status as Order['status'],
+  paymentStatus: (row.paymentstatus ?? row.paymentStatus) as Order['paymentStatus'],
+  paymentMethod: (row.paymentmethod ?? row.paymentMethod) as string | undefined,
+  createdAt: (row.createdat ?? row.createdAt) as string
 });
 
 // Helper to convert Supabase row to Category type
-const toCategory = (row: any): Category => ({
-  id: row.id,
-  name: row.name,
-  orderIndex: row.order_index ?? row.orderIndex ?? 0
+const toCategory = (row: Row): Category => ({
+  id: row.id as string,
+  name: row.name as string,
+  orderIndex: (row.order_index ?? row.orderIndex ?? 0) as number
 });
 
 // Helper to convert Supabase row to MenuItem type
-const toMenuItem = (row: any): MenuItem => ({
-  id: row.id,
-  categoryId: row.categoryid ?? row.categoryId,
-  name: row.name,
-  price: row.price,
-  image: row.image,
-  description: row.description
+const toMenuItem = (row: Row): MenuItem => ({
+  id: row.id as string,
+  categoryId: (row.categoryid ?? row.categoryId) as string,
+  name: row.name as string,
+  price: row.price as number,
+  image: row.image as string,
+  description: row.description as string
 });
 
 export const api = {
-  // Auth
+  // Auth — handled by the Netlify Function backed by Netlify Database, so the
+  // admin gate no longer depends on Supabase Auth (which requires email
+  // confirmation and cannot be self-provisioned from the browser).
   login: async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error || !data?.user) {
-      return { success: false };
+    const res = await fetch('/.netlify/functions/admin-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', email, password })
+    });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (res.ok && data.success && data.user) {
+      return { success: true, user: { id: data.user.id, email: data.user.email } };
     }
-    return { success: true, user: { id: data.user.id, email: data.user.email } };
+    return { success: false, error: data.error as string | undefined };
+  },
+
+  updateCredentials: async (
+    email: string,
+    password: string,
+    newEmail: string,
+    newPassword: string
+  ) => {
+    const res = await fetch('/.netlify/functions/admin-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update-credentials', email, password, newEmail, newPassword })
+    });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (res.ok && data.success && data.user) {
+      return { success: true, user: { id: data.user.id, email: data.user.email } };
+    }
+    return { success: false, error: data.error as string | undefined };
   },
 
   logout: async () => {
-    await supabase.auth.signOut();
-  },
-
-  getSession: async () => {
-    const { data } = await supabase.auth.getSession();
-    return data.session;
+    // The admin gate is tracked client-side; clearing it happens in the caller.
   },
 
   // Init data
@@ -356,7 +383,7 @@ export const api = {
   },
 
   updateTableName: async (id: number, name: string, seats?: number): Promise<Table> => {
-    const updates: any = {};
+    const updates: { name?: string; seats?: number } = {};
     if (name) updates.name = name.trim();
     if (seats !== undefined) updates.seats = seats;
 

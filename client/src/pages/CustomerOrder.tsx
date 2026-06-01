@@ -66,7 +66,7 @@ export default function CustomerOrder() {
       });
       alert('點餐成功！廚房已收到您的訂單。');
       setCart([]);
-    } catch (error) {
+    } catch {
       alert('點餐失敗，請稍後再試');
     } finally {
       setIsSubmitting(false);

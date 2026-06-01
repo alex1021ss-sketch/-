@@ -1,22 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { api } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, toOrder } from '../api';
 import { supabase } from '../lib/supabase';
 import type { Category, MenuItem, Table, Order } from '../types';
 import { QRCodeCanvas } from 'qrcode.react';
 import { Settings, LayoutGrid, DollarSign, Plus, Coffee, LogOut } from 'lucide-react';
 import clsx from 'clsx';
-
-// Helper to convert Supabase row to Order type
-const toOrder = (row: any): Order => ({
-  id: row.id,
-  tableId: row.tableid ?? row.tableId,
-  items: Array.isArray(row.items) ? row.items : (row.items ? JSON.parse(row.items) : []),
-  totalPrice: row.totalprice ?? row.totalPrice,
-  status: row.status,
-  paymentStatus: row.paymentstatus ?? row.paymentStatus,
-  paymentMethod: row.paymentmethod ?? row.paymentMethod,
-  createdAt: row.createdat ?? row.createdAt
-});
 
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<'pos' | 'menu' | 'revenue'>('pos');
@@ -37,7 +25,7 @@ export default function AdminDashboard() {
   const [selectedYear, setSelectedYear] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [selectedDay, setSelectedDay] = useState('all');
-  const [isAuthed, setIsAuthed] = useState(false);
+  const [isAuthed, setIsAuthed] = useState(() => localStorage.getItem('admin_authed') === '1');
   const [loginEmail, setLoginEmail] = useState('admin@admin.com');
   const [loginPassword, setLoginPassword] = useState('adminadmin');
   const [loginError, setLoginError] = useState('');
@@ -58,14 +46,41 @@ export default function AdminDashboard() {
   const [newItem, setNewItem] = useState({ name: '', price: 0, categoryId: 'cat_1', description: '', image: defaultImage });
   const [imagePreview, setImagePreview] = useState<string>(defaultImage);
 
-  useEffect(() => {
-    const authed = localStorage.getItem('admin_authed') === '1';
-    setIsAuthed(authed);
+  const refreshData = useCallback(async () => {
+    try {
+      const data = await api.getInitData();
+      setTables(data.tables);
+      setMenuItems(data.menuItems);
+      setCategories(data.categories);
+      if (data.categories.length > 0) {
+        setNewItem(prev => prev.categoryId ? prev : { ...prev, categoryId: data.categories[0].id });
+      }
+      const orderData = await api.getOrders();
+      setOrders(orderData);
+    } catch (err) {
+      console.error("Failed to refresh data:", err);
+    }
   }, []);
 
   useEffect(() => {
     if (!isAuthed) return;
-    refreshData();
+    // Initial load — kept inside an async IIFE so state updates happen after
+    // the awaited fetch rather than synchronously within the effect body.
+    (async () => {
+      try {
+        const data = await api.getInitData();
+        setTables(data.tables);
+        setMenuItems(data.menuItems);
+        setCategories(data.categories);
+        if (data.categories.length > 0) {
+          setNewItem(prev => prev.categoryId ? prev : { ...prev, categoryId: data.categories[0].id });
+        }
+        const orderData = await api.getOrders();
+        setOrders(orderData);
+      } catch (err) {
+        console.error("Failed to refresh data:", err);
+      }
+    })();
 
     // Subscribe to orders changes via Supabase Realtime
     const ordersChannel = supabase
@@ -111,21 +126,6 @@ export default function AdminDashboard() {
     };
   }, [isAuthed]);
 
-  const refreshData = async () => {
-    try {
-      const data = await api.getInitData();
-      setTables(data.tables);
-      setMenuItems(data.menuItems);
-      setCategories(data.categories);
-      if (data.categories.length > 0 && !newItem.categoryId) {
-        setNewItem(prev => ({ ...prev, categoryId: data.categories[0].id }));
-      }
-      const orderData = await api.getOrders();
-      setOrders(orderData);
-    } catch (err) {
-      console.error("Failed to refresh data:", err);
-    }
-  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

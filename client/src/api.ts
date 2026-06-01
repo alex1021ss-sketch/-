@@ -32,34 +32,42 @@ const toMenuItem = (row: any): MenuItem => ({
 });
 
 export const api = {
-  // Auth
+  // Auth — handled by the Netlify Function backed by Netlify Database, so the
+  // admin gate no longer depends on Supabase Auth (which requires email
+  // confirmation and cannot be self-provisioned from the browser).
   login: async (email: string, password: string) => {
-    // Prefer a real Supabase Auth user when one exists.
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (!error && data?.user) {
+    const res = await fetch('/.netlify/functions/admin-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', email, password })
+    });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (res.ok && data.success && data.user) {
       return { success: true, user: { id: data.user.id, email: data.user.email } };
     }
+    return { success: false, error: data.error as string | undefined };
+  },
 
-    // Fallback: the admin gate is a client-side guard, and this project's
-    // Supabase Auth requires email confirmation, so an admin user cannot be
-    // self-provisioned from the browser. Validate against the configured admin
-    // credentials (overridable via env) so the dashboard remains accessible.
-    const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || 'admin@admin.com';
-    const adminPassword = import.meta.env.VITE_ADMIN_PASSWORD || 'adminadmin';
-    if (email === adminEmail && password === adminPassword) {
-      return { success: true, user: { id: 'local-admin', email } };
+  updateCredentials: async (
+    email: string,
+    password: string,
+    newEmail: string,
+    newPassword: string
+  ) => {
+    const res = await fetch('/.netlify/functions/admin-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update-credentials', email, password, newEmail, newPassword })
+    });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (res.ok && data.success && data.user) {
+      return { success: true, user: { id: data.user.id, email: data.user.email } };
     }
-
-    return { success: false };
+    return { success: false, error: data.error as string | undefined };
   },
 
   logout: async () => {
-    await supabase.auth.signOut();
-  },
-
-  getSession: async () => {
-    const { data } = await supabase.auth.getSession();
-    return data.session;
+    // The admin gate is tracked client-side; clearing it happens in the caller.
   },
 
   // Init data
